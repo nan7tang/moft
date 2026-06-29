@@ -1,0 +1,690 @@
+openapi: 3.0.3
+info:
+  title: MOFT Supply Chain API
+  version: "1.0.0"
+  description: |
+    Backend contract for the MOFT Supply Chain SPA. Every field constraint
+    here mirrors the TypeScript types in `src/app/data/api/types.ts` and the
+    human-readable docs in `handover/DATA_MODELS.md`.
+
+    **Auth:** Every endpoint requires a Bearer token unless explicitly marked
+    `security: []`. See `handover/AUTHENTICATION.md`.
+
+    **Errors:** All non-2xx responses use the `ApiError` schema (see
+    `components/schemas/ApiError`).
+
+    **Versioning:** Breaking changes increment the URL prefix (e.g.
+    `/api/v2/risks`). Additive changes (new optional fields, new endpoints)
+    keep the current version.
+  contact:
+    name: MOFT Frontend Team
+  license:
+    name: Proprietary
+
+servers:
+  - url: http://localhost:3000/api
+    description: Local dev
+  - url: https://staging-api.moft.gov.ae/api/v1
+    description: Staging
+  - url: https://api.moft.gov.ae/api/v1
+    description: Production
+
+# ─── Global security (per-endpoint can override) ────────────────────────────
+security:
+  - bearerAuth: []
+
+# ─── Tags ───────────────────────────────────────────────────────────────────
+tags:
+  - name: Auth
+    description: Authentication and current-user endpoints
+  - name: Risks
+    description: Risk events (Global Monitor map + Risk Intelligence list)
+  - name: Dependencies
+    description: Commodity import dependencies
+  - name: Critical Goods
+    description: HS-chapter monitored commodities
+  - name: Notifications
+    description: Header bell notifications
+  - name: Search
+    description: Global cross-entity search
+
+# ─── Paths ──────────────────────────────────────────────────────────────────
+paths:
+
+  # ── Auth ───────────────────────────────────────────────────────────────
+  /auth/me:
+    get:
+      tags: [Auth]
+      summary: Get the currently authenticated user
+      operationId: getCurrentUser
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UserProfile' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /auth/logout:
+    post:
+      tags: [Auth]
+      summary: Revoke the current session
+      operationId: logout
+      responses:
+        '204':
+          description: Logged out
+
+  # ── Risks (map) ────────────────────────────────────────────────────────
+  /risks/global:
+    get:
+      tags: [Risks]
+      summary: Risks shown as pins on the Global Monitor world map
+      description: |
+        Returns the fixed set of monitored maritime chokepoints. Distinct
+        from `/risks` (active investigations). Today 9 records; future
+        backend may expand without pagination (no scroll on map).
+      operationId: getGlobalRisks
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/GlobalRisk' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /risks/global/{id}:
+    get:
+      tags: [Risks]
+      summary: Detail for a single global risk
+      description: |
+        Used by the risk popup on the map. Returns commodities + news +
+        description. The risk-intelligence detail page reads from
+        `/risks/{id}/detail` instead.
+      operationId: getGlobalRisk
+      parameters:
+        - $ref: '#/components/parameters/RiskId'
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GlobalRiskDetail' }
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ── Risks (list / active + archived) ───────────────────────────────────
+  /risks:
+    get:
+      tags: [Risks]
+      summary: List active or archived risks
+      operationId: listRisks
+      parameters:
+        - name: status
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [active, archived]
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - type: array
+                    items: { $ref: '#/components/schemas/ActiveRisk' }
+                  - type: array
+                    items: { $ref: '#/components/schemas/ArchivedRisk' }
+
+  /risks/{id}/detail:
+    get:
+      tags: [Risks]
+      summary: Detail page payload (breadcrumb + impact chain table)
+      operationId: getRiskDetail
+      parameters:
+        - $ref: '#/components/parameters/RiskId'
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RiskDetail' }
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /risks/{id}/dismiss:
+    post:
+      tags: [Risks]
+      summary: Dismiss an active risk into the archive
+      description: Requires `officer` or `admin` role.
+      operationId: dismissRisk
+      parameters:
+        - $ref: '#/components/parameters/RiskId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties:
+                reason:
+                  type: string
+                  minLength: 10
+                  maxLength: 500
+                  description: Audit-log explanation
+      responses:
+        '200':
+          description: Dismissed
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ArchivedRisk' }
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
+
+  /risks/{id}/restore:
+    post:
+      tags: [Risks]
+      summary: Restore an archived risk to the active list
+      description: Requires `analyst`, `officer`, or `admin` role.
+      operationId: restoreRisk
+      parameters:
+        - $ref: '#/components/parameters/RiskId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties:
+                reason:
+                  type: string
+                  minLength: 10
+                  maxLength: 500
+      responses:
+        '200':
+          description: Restored
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ActiveRisk' }
+
+  # ── Dependencies ───────────────────────────────────────────────────────
+  /dependencies:
+    get:
+      tags: [Dependencies]
+      summary: All tracked commodity dependencies
+      operationId: listDependencies
+      parameters:
+        - name: country
+          in: query
+          required: false
+          schema:
+            type: string
+            maxLength: 30
+          description: Filter to commodities whose `primarySupplier` matches this English country name.
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Dependency' }
+
+  /dependencies/{id}:
+    get:
+      tags: [Dependencies]
+      summary: Single commodity dependency (detail page)
+      operationId: getDependency
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer, minimum: 1 }
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DependencyDetail' }
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ── Critical Goods ─────────────────────────────────────────────────────
+  /critical-goods:
+    get:
+      tags: [Critical Goods]
+      summary: HS-chapter monitored commodities
+      operationId: listCriticalGoods
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/CriticalGood' }
+
+  # ── Notifications ──────────────────────────────────────────────────────
+  /notifications:
+    get:
+      tags: [Notifications]
+      summary: Header-bell notifications for the current user
+      operationId: listNotifications
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  unreadCount: { type: integer, minimum: 0 }
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/AppNotification' }
+
+  /notifications/{id}/read:
+    post:
+      tags: [Notifications]
+      summary: Mark a single notification as read
+      operationId: markNotificationRead
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer, minimum: 1 }
+      responses:
+        '204': { description: OK }
+
+  /notifications/read-all:
+    post:
+      tags: [Notifications]
+      summary: Mark every notification as read
+      operationId: markAllNotificationsRead
+      responses:
+        '204': { description: OK }
+
+  # ── Search ─────────────────────────────────────────────────────────────
+  /search:
+    get:
+      tags: [Search]
+      summary: Cross-entity search (Global Monitor header)
+      description: |
+        Returns matches grouped by entity type. Frontend renders sections
+        for each non-empty group. Backend should rank intra-group by
+        relevance; cross-group ordering is fixed (risks → dependencies →
+        critical-goods → countries).
+      operationId: globalSearch
+      parameters:
+        - name: q
+          in: query
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 100 }
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 50, default: 20 }
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SearchResults' }
+
+# ─── Components ─────────────────────────────────────────────────────────────
+components:
+
+  # ── Security schemes ───────────────────────────────────────────────────
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  # ── Reusable parameters ────────────────────────────────────────────────
+  parameters:
+    RiskId:
+      name: id
+      in: path
+      required: true
+      schema: { type: integer, minimum: 1 }
+    Page:
+      name: page
+      in: query
+      required: false
+      schema: { type: integer, minimum: 1, default: 1 }
+    PageSize:
+      name: pageSize
+      in: query
+      required: false
+      schema: { type: integer, minimum: 1, maximum: 100, default: 25 }
+
+  # ── Reusable responses ─────────────────────────────────────────────────
+  responses:
+    Unauthorized:
+      description: Missing or invalid Bearer token
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ApiError' }
+    Forbidden:
+      description: Token valid but role insufficient
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ApiError' }
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ApiError' }
+    ValidationFailed:
+      description: Request body / params failed validation
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ApiError' }
+    RateLimited:
+      description: Too many requests
+      headers:
+        Retry-After:
+          schema: { type: integer }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ApiError' }
+
+  # ── Schemas ────────────────────────────────────────────────────────────
+  schemas:
+
+    # ── Scalars / enums ─────────────────────────────────────────────────
+    RiskSeverity:
+      type: string
+      enum: [Low, Moderate, High, Critical]
+    InventoryStatus:
+      type: string
+      enum: [good, warning, critical]
+    NotificationType:
+      type: string
+      enum: [high, warning, info, report]
+    UserRole:
+      type: string
+      enum: [viewer, analyst, officer, admin]
+    LonLat:
+      type: array
+      minItems: 2
+      maxItems: 2
+      items: { type: number }
+      example: [56.3, 26.5]
+    UtcDisplayTime:
+      type: string
+      pattern: '^\d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC$'
+      example: "2026-05-19 14:23 UTC"
+
+    # ── Errors / envelopes ──────────────────────────────────────────────
+    ApiError:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          enum: [AUTH_EXPIRED, AUTH_INVALID, FORBIDDEN, NOT_FOUND, VALIDATION_FAILED, RATE_LIMITED, INTERNAL_ERROR]
+        message:
+          type: string
+          maxLength: 300
+        fields:
+          type: object
+          additionalProperties: { type: string }
+        traceId:
+          type: string
+
+    # ── Risks ───────────────────────────────────────────────────────────
+    GlobalRisk:
+      type: object
+      required: [id, title, subtitle, severity, coordinates]
+      properties:
+        id: { type: integer, minimum: 1, maximum: 9999 }
+        title: { type: string, maxLength: 80 }
+        subtitle: { type: string, maxLength: 120 }
+        severity: { $ref: '#/components/schemas/RiskSeverity' }
+        coordinates: { $ref: '#/components/schemas/LonLat' }
+
+    GlobalRiskDetail:
+      allOf:
+        - $ref: '#/components/schemas/GlobalRisk'
+        - type: object
+          required: [code, description, commodities, news]
+          properties:
+            code:
+              type: string
+              maxLength: 30
+              example: "ALT-2026-0047"
+            description:
+              type: string
+              maxLength: 2000
+            commodities:
+              type: array
+              items:
+                type: object
+                required: [name, code]
+                properties:
+                  name: { type: string, maxLength: 60 }
+                  code: { type: string, pattern: '^HS \d{4,6}$' }
+            news:
+              type: array
+              items:
+                type: object
+                required: [source, timeAgo, headline]
+                properties:
+                  source: { type: string, maxLength: 60 }
+                  timeAgo: { type: string, maxLength: 30 }
+                  headline: { type: string, maxLength: 200 }
+
+    ActiveRisk:
+      type: object
+      required: [id, title, subtitle, category, severity, firstDetected, lastUpdated, goods, impactedGoods]
+      properties:
+        id: { type: integer, minimum: 1 }
+        title: { type: string, maxLength: 80 }
+        titleKey: { type: string }
+        subtitle: { type: string, maxLength: 120 }
+        subtitleKey: { type: string }
+        category: { type: string, maxLength: 30 }
+        categoryKey: { type: string }
+        severity: { $ref: '#/components/schemas/RiskSeverity' }
+        firstDetected: { $ref: '#/components/schemas/UtcDisplayTime' }
+        lastUpdated: { $ref: '#/components/schemas/UtcDisplayTime' }
+        goods: { type: integer, minimum: 0 }
+        impactedGoods: { type: integer, minimum: 0 }
+
+    ArchivedRisk:
+      type: object
+      required: [id, title, category, severity, dismissedBy, dismissedOn, reason, impactedGoods]
+      properties:
+        id: { type: integer, minimum: 1 }
+        title: { type: string, maxLength: 80 }
+        titleKey: { type: string }
+        category: { type: string, maxLength: 30 }
+        categoryKey: { type: string }
+        severity: { $ref: '#/components/schemas/RiskSeverity' }
+        dismissedBy: { type: string, maxLength: 50 }
+        dismissedOn: { $ref: '#/components/schemas/UtcDisplayTime' }
+        reason: { type: string, maxLength: 500 }
+        impactedGoods: { type: integer, minimum: 0 }
+
+    RiskDetail:
+      type: object
+      required: [id, title, breadcrumb, impactChain]
+      properties:
+        id: { type: integer }
+        title: { type: string, maxLength: 80 }
+        breadcrumb: { type: string, maxLength: 80 }
+        impactChain:
+          type: array
+          items:
+            type: object
+            required: [product, hsCode, impactType, dependency, stock, inTransit]
+            properties:
+              product: { type: string, maxLength: 40 }
+              hsCode: { type: string, pattern: '^[0-9]{4,6}$' }
+              impactType: { type: string, enum: [Direct, Indirect] }
+              dependency: { type: integer, minimum: 0, maximum: 100 }
+              stock: { type: integer, minimum: 0, maximum: 999 }
+              inTransit: { type: string, maxLength: 20 }
+
+    # ── Dependencies ────────────────────────────────────────────────────
+    Dependency:
+      type: object
+      required:
+        - id
+        - product
+        - category
+        - hsCode
+        - primarySupplier
+        - dependency
+        - alternateSuppliers
+        - uaeConsumption
+        - uaeConsumptionUnit
+        - inventory
+        - inventoryStatus
+        - topImporters
+        - intlPrice
+        - priceChange
+        - mfgCapacity
+        - risk
+      properties:
+        id: { type: integer, minimum: 1 }
+        product: { type: string, maxLength: 30 }
+        category:
+          type: string
+          enum:
+            - Beverages
+            - Cleaning__Disinfection
+            - Condiments
+            - Dairy___Eggs
+            - Edible_Oils
+            - Fruits
+            - Grain
+            - Industrial_Chemicals
+            - Lab
+            - Legumes
+            - Live_Animals
+            - Measurement_Instruments
+            - Meat
+            - Medical
+            - Medical_Devices
+            - Medical_Supplies
+            - Prepared_Food
+            - SWEETENERS
+            - Sea_Food
+            - Spices
+            - Vegetables
+            - Water___Infrastruction
+        hsCode: { type: string, pattern: '^[0-9]{4,6}$' }
+        primarySupplier: { type: string, maxLength: 30 }
+        dependency: { type: integer, minimum: 0, maximum: 100 }
+        alternateSuppliers: { type: string, maxLength: 200 }
+        uaeConsumption: { type: string, maxLength: 10 }
+        uaeConsumptionUnit: { type: string, maxLength: 6 }
+        inventory: { type: integer, minimum: 0, maximum: 999 }
+        inventoryStatus: { $ref: '#/components/schemas/InventoryStatus' }
+        topImporters: { type: string, maxLength: 120 }
+        intlPrice: { type: number, minimum: 0 }
+        priceChange: { type: number, minimum: -100, maximum: 100 }
+        mfgCapacity: { type: string, maxLength: 10 }
+        risk: { $ref: '#/components/schemas/RiskSeverity' }
+
+    DependencyDetail:
+      allOf:
+        - $ref: '#/components/schemas/Dependency'
+        - type: object
+          properties:
+            alternateSupplierCountries:
+              type: array
+              description: Structured detail of the alternative supplier countries.
+              items:
+                type: object
+                required: [country, exportVolumeMt, transitDays, currentSupplyPct, isRecommended, cepa]
+                properties:
+                  country: { type: string, maxLength: 30 }
+                  exportVolumeMt: { type: number, minimum: 0, description: "Millions of metric tons" }
+                  transitDays: { type: string, maxLength: 10, example: "5-7 days" }
+                  currentSupplyPct: { type: integer, minimum: 0, maximum: 100 }
+                  isRecommended: { type: boolean }
+                  cepa:
+                    type: string
+                    enum: [Active, "In Progress", None]
+
+    # ── Critical Goods ──────────────────────────────────────────────────
+    CriticalGood:
+      type: object
+      required: [id, chapterKey, categoryKey, commoditiesKey]
+      properties:
+        id: { type: integer, minimum: 1 }
+        chapterKey:
+          type: string
+          description: Must be a key present in `translations.ts`
+        categoryKey: { type: string }
+        commoditiesKey: { type: string }
+
+    # ── Notifications ───────────────────────────────────────────────────
+    AppNotification:
+      type: object
+      required: [id, type, titleKey, descKey, timeKey, read]
+      properties:
+        id: { type: integer, minimum: 1 }
+        type: { $ref: '#/components/schemas/NotificationType' }
+        titleKey: { type: string }
+        descKey: { type: string }
+        timeKey: { type: string }
+        read: { type: boolean }
+
+    # ── User / Auth ─────────────────────────────────────────────────────
+    UserProfile:
+      type: object
+      required: [id, displayName, email, avatarUrl, roles, department]
+      properties:
+        id: { type: string, format: uuid }
+        displayName: { type: string, maxLength: 60 }
+        email: { type: string, format: email }
+        avatarUrl: { type: string, format: uri, nullable: true }
+        roles:
+          type: array
+          minItems: 1
+          items: { $ref: '#/components/schemas/UserRole' }
+        department: { type: string, maxLength: 60, nullable: true }
+
+    # ── Search ──────────────────────────────────────────────────────────
+    SearchResults:
+      type: object
+      required: [risks, dependencies, criticalGoods, countries, total]
+      properties:
+        total: { type: integer, minimum: 0 }
+        risks:
+          type: array
+          items: { $ref: '#/components/schemas/GlobalRisk' }
+        dependencies:
+          type: array
+          items: { $ref: '#/components/schemas/Dependency' }
+        criticalGoods:
+          type: array
+          items: { $ref: '#/components/schemas/CriticalGood' }
+        countries:
+          type: array
+          items:
+            type: object
+            required: [name, nameKey, code]
+            properties:
+              name: { type: string, maxLength: 30 }
+              nameKey: { type: string }
+              code: { type: string, pattern: '^[A-Z]{2,3}$' }
